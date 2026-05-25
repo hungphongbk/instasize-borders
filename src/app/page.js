@@ -394,9 +394,13 @@ export default function HomePage() {
           }),
       );
 
-      const processed = await runWorkerPool(tasks, workerCount, (done, total) => {
-        setProgress({ done, total });
-      });
+      const processed = await runWorkerPool(
+        tasks,
+        workerCount,
+        (done, total) => {
+          setProgress({ done, total });
+        },
+      );
 
       for (const out of processed) {
         const blob = new Blob([out.arrayBuffer], { type: out.mimeType });
