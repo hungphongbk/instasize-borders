@@ -13,8 +13,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata = {
-  title: "InstaSize Borders Offline",
-  description: "Batch add borders to images locally in your browser.",
+  title: "Insta Tools Hub",
+  description: "Border and SCRL tools for creating Instagram-ready images.",
   manifest: "/manifest.webmanifest",
   icons: {
     icon: [
@@ -25,7 +25,7 @@ export const metadata = {
   },
   appleWebApp: {
     capable: true,
-    title: "InstaSize Borders",
+    title: "Insta Tools Hub",
     statusBarStyle: "default",
   },
 };

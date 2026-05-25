@@ -47,6 +47,107 @@ function getPreviewType() {
   return "image/webp";
 }
 
+function getOutputFormat(fileType, fileName) {
+  const sourceName = fileName || "image";
+  const sourceExt = sourceName.includes(".")
+    ? sourceName.slice(sourceName.lastIndexOf(".") + 1).toLowerCase()
+    : "png";
+
+  if (!String(fileType || "").startsWith("image/")) {
+    return { mimeType: "image/png", extension: sourceExt || "png" };
+  }
+
+  if (fileType === "image/jpg") {
+    return { mimeType: "image/jpeg", extension: "jpg" };
+  }
+
+  return {
+    mimeType: fileType,
+    extension: (fileType.split("/")[1] || sourceExt || "png").toLowerCase(),
+  };
+}
+
+function getFillStyle(hex) {
+  const bg = hexToRgb(hex);
+  return `rgb(${bg.r}, ${bg.g}, ${bg.b})`;
+}
+
+async function processScrl(file, options) {
+  if (typeof createImageBitmap !== "function") {
+    throw new Error(
+      "This browser does not support createImageBitmap in Web Workers.",
+    );
+  }
+
+  if (typeof OffscreenCanvas === "undefined") {
+    throw new Error("This browser does not support OffscreenCanvas.");
+  }
+
+  const bitmap = await createImageBitmap(file);
+
+  try {
+    const frameCount = Math.max(1, Math.floor(Number(options.frameCount) || 1));
+    const framePixelWidth = Math.max(
+      1,
+      Math.floor(Number(options.framePixelWidth) || 1),
+    );
+    const framePixelHeight = Math.max(
+      1,
+      Math.floor(Number(options.framePixelHeight) || 1),
+    );
+    const frameW = Number(options.frameW) || 1;
+    const stripW = Number(options.stripW) || frameW * frameCount;
+    const imageCenterDisplayX = Number(options.imageCenterDisplayX) || stripW / 2;
+    const imageCenterDisplayY = Number(options.imageCenterDisplayY) || 0;
+    const renderScale = Number(options.renderScale) || 1;
+    const rotationRad = Number(options.rotationRad) || 0;
+    const fillStyle = getFillStyle(options.fillColor || "#0f172a");
+
+    const out = getOutputFormat(file.type, file.name || "image");
+    const baseName = (file.name || "image").replace(/\.[^/.]+$/, "");
+
+    const canvas = new OffscreenCanvas(framePixelWidth, framePixelHeight);
+    const ctx = canvas.getContext("2d", { alpha: false });
+    if (!ctx) throw new Error("Cannot create SCRL canvas context.");
+
+    const frames = [];
+
+    for (let i = 0; i < frameCount; i += 1) {
+      ctx.fillStyle = fillStyle;
+      ctx.fillRect(0, 0, framePixelWidth, framePixelHeight);
+
+      const frameStartX = i * frameW;
+      const centerXInFrame = (imageCenterDisplayX - frameStartX) / renderScale;
+      const centerYInFrame = imageCenterDisplayY / renderScale;
+
+      ctx.save();
+      ctx.translate(centerXInFrame, centerYInFrame);
+      ctx.rotate(rotationRad);
+      ctx.drawImage(bitmap, -bitmap.width / 2, -bitmap.height / 2);
+      ctx.restore();
+
+      const blob = await canvas.convertToBlob({
+        type: out.mimeType,
+        quality:
+          out.mimeType === "image/jpeg" || out.mimeType === "image/webp"
+            ? 1
+            : undefined,
+      });
+
+      const arrayBuffer = await blob.arrayBuffer();
+      frames.push({
+        fileName: `${baseName}_scrl_${String(i + 1).padStart(2, "0")}.${out.extension}`,
+        mimeType: out.mimeType,
+        arrayBuffer,
+      });
+    }
+
+    return frames;
+  } finally {
+    if (typeof bitmap.close === "function") bitmap.close();
+  }
+}
+
 function getCanvasSize(width, height, ratio, extraPx) {
   const targetRatio = getTargetRatio(ratio);
 
@@ -189,7 +290,12 @@ async function buildPreview(file, options) {
 
 self.addEventListener("message", async (event) => {
   const message = event.data;
-  if (!message || (message.type !== "PROCESS" && message.type !== "PREVIEW"))
+  if (
+    !message ||
+    (message.type !== "PROCESS" &&
+      message.type !== "PREVIEW" &&
+      message.type !== "SCRL_PROCESS")
+  )
     return;
 
   const { id, file, options } = message;
@@ -206,6 +312,20 @@ self.addEventListener("message", async (event) => {
           arrayBuffer: result.arrayBuffer,
         },
         [result.arrayBuffer],
+      );
+      return;
+    }
+
+    if (message.type === "SCRL_PROCESS") {
+      const frames = await processScrl(file, options || {});
+      const transferables = frames.map((f) => f.arrayBuffer);
+      self.postMessage(
+        {
+          type: "DONE",
+          id,
+          frames,
+        },
+        transferables,
       );
       return;
     }
