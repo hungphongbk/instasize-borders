@@ -466,6 +466,12 @@ export default function ScrlPage() {
               >
                 Border
               </Link>
+              <Link
+                href="/grid"
+                className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 hover:bg-slate-50"
+              >
+                Grid
+              </Link>
             </div>
           </div>
 

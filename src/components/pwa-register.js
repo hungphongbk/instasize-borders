@@ -9,7 +9,27 @@ export default function PWARegister() {
 
     const register = async () => {
       try {
-        await navigator.serviceWorker.register("/sw.js", { scope: "/" });
+        if (process.env.NODE_ENV !== "production") {
+          const registrations = await navigator.serviceWorker.getRegistrations();
+          await Promise.all(registrations.map((registration) => registration.unregister()));
+
+          if (typeof caches !== "undefined") {
+            const cacheKeys = await caches.keys();
+            await Promise.all(
+              cacheKeys
+                .filter((key) => key.startsWith("instasize-borders-"))
+                .map((key) => caches.delete(key)),
+            );
+          }
+
+          return;
+        }
+
+        const registration = await navigator.serviceWorker.register("/sw.js", {
+          scope: "/",
+          updateViaCache: "none",
+        });
+        await registration.update();
       } catch {
         // Service worker registration is optional enhancement.
       }

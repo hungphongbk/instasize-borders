@@ -58,6 +58,32 @@ const MENU_ITEMS = [
       </svg>
     ),
   },
+  {
+    key: "grid",
+    href: "/grid",
+    title: "Grid",
+    subtitle: "Tạo layout dạng grid (1:2, 1:3, 2:2, 2:3) cho post/story",
+    accent: "from-emerald-500 to-lime-300",
+    icon: (
+      <svg viewBox="0 0 120 120" className="h-28 w-28" aria-hidden>
+        <rect x="10" y="10" width="100" height="100" rx="14" fill="#fff" />
+        <rect x="20" y="20" width="36" height="36" rx="6" fill="#bbf7d0" />
+        <rect x="64" y="20" width="36" height="36" rx="6" fill="#a7f3d0" />
+        <rect x="20" y="64" width="36" height="36" rx="6" fill="#86efac" />
+        <rect x="64" y="64" width="36" height="36" rx="6" fill="#4ade80" />
+        <rect
+          x="10"
+          y="10"
+          width="100"
+          height="100"
+          rx="14"
+          fill="none"
+          stroke="#111"
+          strokeWidth="6"
+        />
+      </svg>
+    ),
+  },
 ];
 
 export default function HomePage() {
@@ -72,12 +98,12 @@ export default function HomePage() {
             Chọn công cụ bạn muốn dùng
           </h1>
           <p className="mx-auto mt-3 max-w-2xl text-sm text-slate-600 sm:text-base">
-            Home gồm 2 menu lớn: Border và SCRL. Border giữ nguyên logic hiện
-            tại, SCRL dành cho cắt ảnh carousel theo frame liên tiếp.
+            Home gồm 3 menu lớn: Border, SCRL và Grid. Border thêm viền,
+            SCRL cắt carousel theo frame liên tiếp, Grid ghép layout theo ô.
           </p>
         </header>
 
-        <section className="grid grid-cols-1 gap-5 md:grid-cols-2">
+        <section className="grid grid-cols-1 gap-5 md:grid-cols-2 xl:grid-cols-3">
           {MENU_ITEMS.map((item) => (
             <Link
               key={item.key}

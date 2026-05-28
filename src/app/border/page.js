@@ -467,6 +467,12 @@ export default function HomePage() {
             >
               SCRL
             </Link>
+            <Link
+              href="/grid"
+              className="rounded-lg border border-gray-300 bg-white px-3 py-1 text-xs text-gray-700 hover:bg-gray-100"
+            >
+              Grid
+            </Link>
           </div>
           <h1 className="text-2xl font-semibold">
             InstaSize Borders Offline (1:1 / 4:5 / 16:9)

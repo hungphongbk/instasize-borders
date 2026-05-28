@@ -72,6 +72,128 @@ function getFillStyle(hex) {
   return `rgb(${bg.r}, ${bg.g}, ${bg.b})`;
 }
 
+function getGridConfig(grid) {
+  if (grid === "1:3") return { cols: 1, rows: 3, key: "1x3" };
+  if (grid === "2:2") return { cols: 2, rows: 2, key: "2x2" };
+  if (grid === "2:3") return { cols: 2, rows: 3, key: "2x3" };
+  return { cols: 1, rows: 2, key: "1x2" };
+}
+
+function getGridOutputSize(outputRatio) {
+  if (outputRatio === "9:16") {
+    return { width: 1080, height: 1920, key: "9x16" };
+  }
+  return { width: 1080, height: 1350, key: "4x5" };
+}
+
+function getGridOutputType(type) {
+  if (type === "image/png") {
+    return { mimeType: "image/png", ext: "png" };
+  }
+  if (type === "image/webp") {
+    return { mimeType: "image/webp", ext: "webp" };
+  }
+  return { mimeType: "image/jpeg", ext: "jpg" };
+}
+
+function drawCoverImage(ctx, bitmap, left, top, width, height) {
+  const sx = Math.max(1e-6, width / bitmap.width);
+  const sy = Math.max(1e-6, height / bitmap.height);
+  const scale = Math.max(sx, sy);
+  const drawWidth = bitmap.width * scale;
+  const drawHeight = bitmap.height * scale;
+  const drawLeft = left + (width - drawWidth) / 2;
+  const drawTop = top + (height - drawHeight) / 2;
+  ctx.drawImage(bitmap, drawLeft, drawTop, drawWidth, drawHeight);
+}
+
+async function processGrid(files, options) {
+  if (typeof createImageBitmap !== "function") {
+    throw new Error(
+      "This browser does not support createImageBitmap in Web Workers.",
+    );
+  }
+
+  if (typeof OffscreenCanvas === "undefined") {
+    throw new Error("This browser does not support OffscreenCanvas.");
+  }
+
+  const inputFiles = Array.isArray(files) ? files : [];
+  if (!inputFiles.length) {
+    throw new Error("No files provided for grid processing.");
+  }
+
+  const grid = getGridConfig(options.grid);
+  const outputSize = getGridOutputSize(options.outputRatio);
+  const outputType = getGridOutputType(options.outputType);
+
+  const gap = Math.max(0, Math.floor(Number(options.gap) || 0));
+  const padding = Math.max(0, Math.floor(Number(options.padding) || 0));
+  const fillStyle = getFillStyle(options.backgroundColor || "#ffffff");
+
+  const innerWidth =
+    outputSize.width - padding * 2 - gap * Math.max(0, grid.cols - 1);
+  const innerHeight =
+    outputSize.height - padding * 2 - gap * Math.max(0, grid.rows - 1);
+
+  if (innerWidth <= 0 || innerHeight <= 0) {
+    throw new Error("Grid spacing is too large for selected output size.");
+  }
+
+  const baseCellW = Math.floor(innerWidth / grid.cols);
+  const baseCellH = Math.floor(innerHeight / grid.rows);
+  const usedFiles = inputFiles.slice(0, grid.cols * grid.rows);
+  const bitmaps = await Promise.all(usedFiles.map((file) => createImageBitmap(file)));
+
+  try {
+    const canvas = new OffscreenCanvas(outputSize.width, outputSize.height);
+    const ctx = canvas.getContext("2d", { alpha: false });
+    if (!ctx) throw new Error("Cannot create grid canvas context.");
+
+    ctx.fillStyle = fillStyle;
+    ctx.fillRect(0, 0, outputSize.width, outputSize.height);
+
+    for (let row = 0; row < grid.rows; row += 1) {
+      for (let col = 0; col < grid.cols; col += 1) {
+        const slotIndex = row * grid.cols + col;
+        const bitmap = bitmaps[slotIndex];
+        if (!bitmap) continue;
+
+        const cellX = padding + col * (baseCellW + gap);
+        const cellY = padding + row * (baseCellH + gap);
+        const cellW = col === grid.cols - 1 ? outputSize.width - padding - cellX : baseCellW;
+        const cellH = row === grid.rows - 1 ? outputSize.height - padding - cellY : baseCellH;
+
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(cellX, cellY, cellW, cellH);
+        ctx.clip();
+        drawCoverImage(ctx, bitmap, cellX, cellY, cellW, cellH);
+        ctx.restore();
+      }
+    }
+
+    const blob = await canvas.convertToBlob({
+      type: outputType.mimeType,
+      quality:
+        outputType.mimeType === "image/jpeg" || outputType.mimeType === "image/webp"
+          ? 0.95
+          : undefined,
+    });
+
+    const base = (inputFiles[0]?.name || "image").replace(/\.[^/.]+$/, "");
+    return {
+      fileName: `${base}_grid_${grid.key}_${outputSize.key}.${outputType.ext}`,
+      mimeType: blob.type || outputType.mimeType,
+      arrayBuffer: await blob.arrayBuffer(),
+    };
+  } finally {
+    bitmaps.forEach((bitmap) => {
+      if (typeof bitmap.close === "function") bitmap.close();
+    });
+  }
+}
+
 async function processScrl(file, options) {
   if (typeof createImageBitmap !== "function") {
     throw new Error(
@@ -294,7 +416,8 @@ self.addEventListener("message", async (event) => {
     !message ||
     (message.type !== "PROCESS" &&
       message.type !== "PREVIEW" &&
-      message.type !== "SCRL_PROCESS")
+      message.type !== "SCRL_PROCESS" &&
+      message.type !== "GRID_PROCESS")
   )
     return;
 
@@ -326,6 +449,21 @@ self.addEventListener("message", async (event) => {
           frames,
         },
         transferables,
+      );
+      return;
+    }
+
+    if (message.type === "GRID_PROCESS") {
+      const result = await processGrid(message.files, options || {});
+      self.postMessage(
+        {
+          type: "DONE",
+          id,
+          fileName: result.fileName,
+          mimeType: result.mimeType,
+          arrayBuffer: result.arrayBuffer,
+        },
+        [result.arrayBuffer],
       );
       return;
     }
