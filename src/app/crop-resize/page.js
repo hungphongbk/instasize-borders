@@ -6,7 +6,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 const MAX_FILE_BYTES = 1024 * 1024 * 1024;
 const PREVIEW_MAX_EDGE = 1800;
 const WARNING_WORKING_SET_BYTES = 768 * 1024 * 1024;
-const ZOOM_OPTIONS = [10, 30, 100];
+const ZOOM_OPTIONS = [5, 10, 20];
 const ASPECT_OPTIONS = [
   {
     value: "4:5",
@@ -776,7 +776,7 @@ export default function CropResizePage() {
                 <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
                   Crop aspect
                 </p>
-                <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-1">
+                <div className="mt-3 grid grid-cols-2 gap-3">
                   {ASPECT_OPTIONS.map((option) => (
                     <button
                       key={option.value}
@@ -805,7 +805,7 @@ export default function CropResizePage() {
                       Khung crop hiện tại tương đương <strong>{cropOutputLabel}</strong> trên ảnh gốc.
                     </p>
                     <p>
-                        10x lấy vùng lớn nhất, 30x và 100x thu nhỏ khung theo cùng aspect ratio để zoom sâu hơn. Export mặc định ra PNG để tránh thêm một vòng nén lossy trong browser.
+                      5x lấy vùng lớn nhất, 10x và 20x thu nhỏ khung theo cùng aspect ratio để zoom sâu hơn. Export mặc định ra PNG để tránh thêm một vòng nén lossy trong browser.
                     </p>
                   </div>
                 ) : (
