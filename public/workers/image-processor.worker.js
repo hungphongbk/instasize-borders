@@ -47,6 +47,14 @@ function getPreviewType() {
   return "image/webp";
 }
 
+function getCropResizeOutputInfo(fileName, suffix) {
+  const base = (fileName || "image").replace(/\.[^/.]+$/, "");
+  return {
+    fileName: `${base}_${suffix}.png`,
+    mimeType: "image/png",
+  };
+}
+
 function getOutputFormat(fileType, fileName) {
   const sourceName = fileName || "image";
   const sourceExt = sourceName.includes(".")
@@ -410,6 +418,186 @@ async function buildPreview(file, options) {
   }
 }
 
+function assertCanvasLimits(width, height) {
+  const safeWidth = Math.max(1, Math.floor(Number(width) || 0));
+  const safeHeight = Math.max(1, Math.floor(Number(height) || 0));
+
+  if (safeWidth > 16384 || safeHeight > 16384 || safeWidth * safeHeight > 268435456) {
+    throw new Error(
+      "Output region exceeds browser canvas limits for worker-only processing.",
+    );
+  }
+}
+
+async function buildCropResizePreview(file, options) {
+  if (typeof createImageBitmap !== "function") {
+    throw new Error(
+      "This browser does not support createImageBitmap in Web Workers.",
+    );
+  }
+
+  if (typeof OffscreenCanvas === "undefined") {
+    throw new Error("This browser does not support OffscreenCanvas.");
+  }
+
+  const bitmap = await createImageBitmap(file);
+
+  try {
+    const previewMaxEdge = Math.max(
+      120,
+      Math.floor(Number(options.previewMaxEdge) || 1800),
+    );
+    const scale = Math.min(1, previewMaxEdge / Math.max(bitmap.width, bitmap.height));
+    const previewWidth = Math.max(1, Math.round(bitmap.width * scale));
+    const previewHeight = Math.max(1, Math.round(bitmap.height * scale));
+
+    const canvas = new OffscreenCanvas(previewWidth, previewHeight);
+    const ctx = canvas.getContext("2d", { alpha: true });
+    if (!ctx) throw new Error("Cannot create crop preview canvas context.");
+
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
+    ctx.drawImage(bitmap, 0, 0, previewWidth, previewHeight);
+
+    let blob;
+    try {
+      blob = await canvas.convertToBlob({
+        type: getPreviewType(),
+        quality: 0.82,
+      });
+    } catch {
+      blob = await canvas.convertToBlob({
+        type: "image/jpeg",
+        quality: 0.85,
+      });
+    }
+
+    return {
+      width: bitmap.width,
+      height: bitmap.height,
+      previewWidth,
+      previewHeight,
+      estimatedRawBytes: bitmap.width * bitmap.height * 4,
+      mimeType: blob.type || "image/jpeg",
+      arrayBuffer: await blob.arrayBuffer(),
+    };
+  } finally {
+    if (typeof bitmap.close === "function") bitmap.close();
+  }
+}
+
+function normalizeCropRect(cropRect, bitmap) {
+  const width = Math.min(
+    bitmap.width,
+    Math.max(1, Math.round(Number(cropRect?.width) || 0)),
+  );
+  const height = Math.min(
+    bitmap.height,
+    Math.max(1, Math.round(Number(cropRect?.height) || 0)),
+  );
+  const left = Math.min(
+    Math.max(0, Math.round(Number(cropRect?.left) || 0)),
+    Math.max(0, bitmap.width - width),
+  );
+  const top = Math.min(
+    Math.max(0, Math.round(Number(cropRect?.top) || 0)),
+    Math.max(0, bitmap.height - height),
+  );
+
+  return { left, top, width, height };
+}
+
+async function exportCropResizeResize(file, options) {
+  if (typeof createImageBitmap !== "function") {
+    throw new Error(
+      "This browser does not support createImageBitmap in Web Workers.",
+    );
+  }
+
+  if (typeof OffscreenCanvas === "undefined") {
+    throw new Error("This browser does not support OffscreenCanvas.");
+  }
+
+  const bitmap = await createImageBitmap(file);
+
+  try {
+    const maxEdge = Math.max(1, Math.floor(Number(options.maxEdge) || 2048));
+    const scale = Math.min(1, maxEdge / Math.max(bitmap.width, bitmap.height));
+    const outputWidth = Math.max(1, Math.round(bitmap.width * scale));
+    const outputHeight = Math.max(1, Math.round(bitmap.height * scale));
+    assertCanvasLimits(outputWidth, outputHeight);
+
+    const canvas = new OffscreenCanvas(outputWidth, outputHeight);
+    const ctx = canvas.getContext("2d", { alpha: true });
+    if (!ctx) throw new Error("Cannot create resize canvas context.");
+
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
+    ctx.drawImage(bitmap, 0, 0, outputWidth, outputHeight);
+
+    const blob = await canvas.convertToBlob({ type: "image/png" });
+    const output = getCropResizeOutputInfo(file.name, "resize_2048");
+
+    return {
+      fileName: output.fileName,
+      mimeType: output.mimeType,
+      arrayBuffer: await blob.arrayBuffer(),
+    };
+  } finally {
+    if (typeof bitmap.close === "function") bitmap.close();
+  }
+}
+
+async function exportCropResizeCrop(file, options) {
+  if (typeof createImageBitmap !== "function") {
+    throw new Error(
+      "This browser does not support createImageBitmap in Web Workers.",
+    );
+  }
+
+  if (typeof OffscreenCanvas === "undefined") {
+    throw new Error("This browser does not support OffscreenCanvas.");
+  }
+
+  const bitmap = await createImageBitmap(file);
+
+  try {
+    const crop = normalizeCropRect(options.cropRect, bitmap);
+    assertCanvasLimits(crop.width, crop.height);
+
+    const canvas = new OffscreenCanvas(crop.width, crop.height);
+    const ctx = canvas.getContext("2d", { alpha: true });
+    if (!ctx) throw new Error("Cannot create crop canvas context.");
+
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
+    ctx.drawImage(
+      bitmap,
+      crop.left,
+      crop.top,
+      crop.width,
+      crop.height,
+      0,
+      0,
+      crop.width,
+      crop.height,
+    );
+
+    const blob = await canvas.convertToBlob({ type: "image/png" });
+    const zoomLabel = String(options.zoomLabel || "10x").replace(/[^0-9a-zA-Z_-]+/g, "");
+    const aspectLabel = String(options.aspectLabel || "4x5").replace(/[^0-9a-zA-Z_-]+/g, "");
+    const output = getCropResizeOutputInfo(file.name, `crop_${zoomLabel}_${aspectLabel}`);
+
+    return {
+      fileName: output.fileName,
+      mimeType: output.mimeType,
+      arrayBuffer: await blob.arrayBuffer(),
+    };
+  } finally {
+    if (typeof bitmap.close === "function") bitmap.close();
+  }
+}
+
 self.addEventListener("message", async (event) => {
   const message = event.data;
   if (
@@ -417,7 +605,10 @@ self.addEventListener("message", async (event) => {
     (message.type !== "PROCESS" &&
       message.type !== "PREVIEW" &&
       message.type !== "SCRL_PROCESS" &&
-      message.type !== "GRID_PROCESS")
+      message.type !== "GRID_PROCESS" &&
+      message.type !== "CROP_RESIZE_PREVIEW" &&
+      message.type !== "CROP_RESIZE_EXPORT_RESIZE" &&
+      message.type !== "CROP_RESIZE_EXPORT_CROP")
   )
     return;
 
@@ -455,6 +646,55 @@ self.addEventListener("message", async (event) => {
 
     if (message.type === "GRID_PROCESS") {
       const result = await processGrid(message.files, options || {});
+      self.postMessage(
+        {
+          type: "DONE",
+          id,
+          fileName: result.fileName,
+          mimeType: result.mimeType,
+          arrayBuffer: result.arrayBuffer,
+        },
+        [result.arrayBuffer],
+      );
+      return;
+    }
+
+    if (message.type === "CROP_RESIZE_PREVIEW") {
+      const result = await buildCropResizePreview(file, options || {});
+      self.postMessage(
+        {
+          type: "DONE",
+          id,
+          width: result.width,
+          height: result.height,
+          previewWidth: result.previewWidth,
+          previewHeight: result.previewHeight,
+          estimatedRawBytes: result.estimatedRawBytes,
+          mimeType: result.mimeType,
+          arrayBuffer: result.arrayBuffer,
+        },
+        [result.arrayBuffer],
+      );
+      return;
+    }
+
+    if (message.type === "CROP_RESIZE_EXPORT_RESIZE") {
+      const result = await exportCropResizeResize(file, options || {});
+      self.postMessage(
+        {
+          type: "DONE",
+          id,
+          fileName: result.fileName,
+          mimeType: result.mimeType,
+          arrayBuffer: result.arrayBuffer,
+        },
+        [result.arrayBuffer],
+      );
+      return;
+    }
+
+    if (message.type === "CROP_RESIZE_EXPORT_CROP") {
+      const result = await exportCropResizeCrop(file, options || {});
       self.postMessage(
         {
           type: "DONE",

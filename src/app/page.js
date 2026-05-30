@@ -34,6 +34,50 @@ const MENU_ITEMS = [
     ),
   },
   {
+    key: "crop-resize",
+    href: "/crop-resize",
+    title: "Crop & Resize",
+    subtitle:
+      "Upload một ảnh cực lớn để resize 2048px hoặc crop zoom 10x / 30x / 100x theo khung 4:5 và 9:16",
+    accent: "from-rose-500 via-orange-400 to-amber-300",
+    icon: (
+      <svg viewBox="0 0 120 120" className="h-28 w-28" aria-hidden>
+        <rect x="18" y="14" width="84" height="92" rx="14" fill="#fff" />
+        <rect
+          x="33"
+          y="28"
+          width="54"
+          height="64"
+          rx="10"
+          fill="#fed7aa"
+          stroke="#111"
+          strokeWidth="4"
+        />
+        <rect
+          x="46"
+          y="42"
+          width="28"
+          height="35"
+          rx="6"
+          fill="none"
+          stroke="#111"
+          strokeWidth="5"
+        />
+        <path d="M92 26h16M100 18v16" stroke="#111" strokeWidth="5" strokeLinecap="round" />
+        <rect
+          x="18"
+          y="14"
+          width="84"
+          height="92"
+          rx="14"
+          fill="none"
+          stroke="#111"
+          strokeWidth="6"
+        />
+      </svg>
+    ),
+  },
+  {
     key: "scrl",
     href: "/scrl",
     title: "SCRL",
@@ -98,12 +142,13 @@ export default function HomePage() {
             Chọn công cụ bạn muốn dùng
           </h1>
           <p className="mx-auto mt-3 max-w-2xl text-sm text-slate-600 sm:text-base">
-            Home gồm 3 menu lớn: Border, SCRL và Grid. Border thêm viền,
-            SCRL cắt carousel theo frame liên tiếp, Grid ghép layout theo ô.
+            Home gồm 4 menu lớn: Border, Crop & Resize, SCRL và Grid. Border thêm
+            viền, Crop & Resize xử lý một ảnh gốc cực lớn, SCRL cắt carousel theo
+            frame liên tiếp, Grid ghép layout theo ô.
           </p>
         </header>
 
-        <section className="grid grid-cols-1 gap-5 md:grid-cols-2 xl:grid-cols-3">
+        <section className="grid grid-cols-1 gap-5 md:grid-cols-2 xl:grid-cols-4">
           {MENU_ITEMS.map((item) => (
             <Link
               key={item.key}

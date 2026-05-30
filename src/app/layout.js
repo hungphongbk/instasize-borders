@@ -14,7 +14,8 @@ const geistMono = Geist_Mono({
 
 export const metadata = {
   title: "Insta Tools Hub",
-  description: "Border, SCRL and Grid tools for creating Instagram-ready images.",
+  description:
+    "Border, Crop & Resize, SCRL and Grid tools for creating Instagram-ready images.",
   manifest: "/manifest.webmanifest",
   icons: {
     icon: [
