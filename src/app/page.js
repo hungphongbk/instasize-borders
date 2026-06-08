@@ -63,7 +63,12 @@ const MENU_ITEMS = [
           stroke="#111"
           strokeWidth="5"
         />
-        <path d="M92 26h16M100 18v16" stroke="#111" strokeWidth="5" strokeLinecap="round" />
+        <path
+          d="M92 26h16M100 18v16"
+          stroke="#111"
+          strokeWidth="5"
+          strokeLinecap="round"
+        />
         <rect
           x="18"
           y="14"
@@ -88,7 +93,12 @@ const MENU_ITEMS = [
         <rect x="8" y="20" width="30" height="80" rx="8" fill="#fff" />
         <rect x="45" y="20" width="30" height="80" rx="8" fill="#fff" />
         <rect x="82" y="20" width="30" height="80" rx="8" fill="#fff" />
-        <path d="M16 70h88" stroke="#111" strokeWidth="4" strokeDasharray="6 4" />
+        <path
+          d="M16 70h88"
+          stroke="#111"
+          strokeWidth="4"
+          strokeDasharray="6 4"
+        />
         <rect
           x="8"
           y="20"
@@ -128,6 +138,46 @@ const MENU_ITEMS = [
       </svg>
     ),
   },
+  {
+    key: "comparison",
+    href: "/comparison",
+    title: "Comparison",
+    subtitle:
+      "So sánh hai ảnh gần giống nhau bằng zoom và pan đồng bộ để soi khác biệt",
+    accent: "from-indigo-500 via-cyan-400 to-emerald-300",
+    icon: (
+      <svg viewBox="0 0 120 120" className="h-28 w-28" aria-hidden>
+        <rect x="10" y="16" width="100" height="88" rx="14" fill="#fff" />
+        <line x1="60" y1="20" x2="60" y2="100" stroke="#111" strokeWidth="5" />
+        <rect x="18" y="24" width="34" height="72" rx="8" fill="#c7d2fe" />
+        <rect x="68" y="24" width="34" height="72" rx="8" fill="#a7f3d0" />
+        <circle
+          cx="60"
+          cy="60"
+          r="14"
+          fill="#fff"
+          stroke="#111"
+          strokeWidth="4"
+        />
+        <path
+          d="M54 60h12M60 54v12"
+          stroke="#111"
+          strokeWidth="3.5"
+          strokeLinecap="round"
+        />
+        <rect
+          x="10"
+          y="16"
+          width="100"
+          height="88"
+          rx="14"
+          fill="none"
+          stroke="#111"
+          strokeWidth="6"
+        />
+      </svg>
+    ),
+  },
 ];
 
 export default function HomePage() {
@@ -142,13 +192,14 @@ export default function HomePage() {
             Chọn công cụ bạn muốn dùng
           </h1>
           <p className="mx-auto mt-3 max-w-2xl text-sm text-slate-600 sm:text-base">
-            Home gồm 4 menu lớn: Border, Crop & Resize, SCRL và Grid. Border thêm
-            viền, Crop & Resize xử lý một ảnh gốc cực lớn, SCRL cắt carousel theo
-            frame liên tiếp, Grid ghép layout theo ô.
+            Home gồm 5 menu lớn: Border, Crop & Resize, SCRL, Grid và
+            Comparison. Border thêm viền, Crop & Resize xử lý một ảnh gốc cực
+            lớn, SCRL cắt carousel theo frame liên tiếp, Grid ghép layout theo
+            ô, Comparison để soi hai phiên bản ảnh bằng zoom/pan đồng bộ.
           </p>
         </header>
 
-        <section className="grid grid-cols-1 gap-5 md:grid-cols-2 xl:grid-cols-4">
+        <section className="grid grid-cols-1 gap-5 md:grid-cols-2 xl:grid-cols-5">
           {MENU_ITEMS.map((item) => (
             <Link
               key={item.key}

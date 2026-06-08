@@ -151,7 +151,9 @@ async function processGrid(files, options) {
   const baseCellW = Math.floor(innerWidth / grid.cols);
   const baseCellH = Math.floor(innerHeight / grid.rows);
   const usedFiles = inputFiles.slice(0, grid.cols * grid.rows);
-  const bitmaps = await Promise.all(usedFiles.map((file) => createImageBitmap(file)));
+  const bitmaps = await Promise.all(
+    usedFiles.map((file) => createImageBitmap(file)),
+  );
 
   try {
     const canvas = new OffscreenCanvas(outputSize.width, outputSize.height);
@@ -169,8 +171,14 @@ async function processGrid(files, options) {
 
         const cellX = padding + col * (baseCellW + gap);
         const cellY = padding + row * (baseCellH + gap);
-        const cellW = col === grid.cols - 1 ? outputSize.width - padding - cellX : baseCellW;
-        const cellH = row === grid.rows - 1 ? outputSize.height - padding - cellY : baseCellH;
+        const cellW =
+          col === grid.cols - 1
+            ? outputSize.width - padding - cellX
+            : baseCellW;
+        const cellH =
+          row === grid.rows - 1
+            ? outputSize.height - padding - cellY
+            : baseCellH;
 
         ctx.save();
         ctx.beginPath();
@@ -184,7 +192,8 @@ async function processGrid(files, options) {
     const blob = await canvas.convertToBlob({
       type: outputType.mimeType,
       quality:
-        outputType.mimeType === "image/jpeg" || outputType.mimeType === "image/webp"
+        outputType.mimeType === "image/jpeg" ||
+        outputType.mimeType === "image/webp"
           ? 0.95
           : undefined,
     });
@@ -227,7 +236,8 @@ async function processScrl(file, options) {
     );
     const frameW = Number(options.frameW) || 1;
     const stripW = Number(options.stripW) || frameW * frameCount;
-    const imageCenterDisplayX = Number(options.imageCenterDisplayX) || stripW / 2;
+    const imageCenterDisplayX =
+      Number(options.imageCenterDisplayX) || stripW / 2;
     const imageCenterDisplayY = Number(options.imageCenterDisplayY) || 0;
     const renderScale = Number(options.renderScale) || 1;
     const rotationRad = Number(options.rotationRad) || 0;
@@ -422,7 +432,11 @@ function assertCanvasLimits(width, height) {
   const safeWidth = Math.max(1, Math.floor(Number(width) || 0));
   const safeHeight = Math.max(1, Math.floor(Number(height) || 0));
 
-  if (safeWidth > 16384 || safeHeight > 16384 || safeWidth * safeHeight > 268435456) {
+  if (
+    safeWidth > 16384 ||
+    safeHeight > 16384 ||
+    safeWidth * safeHeight > 268435456
+  ) {
     throw new Error(
       "Output region exceeds browser canvas limits for worker-only processing.",
     );
@@ -447,7 +461,10 @@ async function buildCropResizePreview(file, options) {
       120,
       Math.floor(Number(options.previewMaxEdge) || 1800),
     );
-    const scale = Math.min(1, previewMaxEdge / Math.max(bitmap.width, bitmap.height));
+    const scale = Math.min(
+      1,
+      previewMaxEdge / Math.max(bitmap.width, bitmap.height),
+    );
     const previewWidth = Math.max(1, Math.round(bitmap.width * scale));
     const previewHeight = Math.max(1, Math.round(bitmap.height * scale));
 
@@ -505,6 +522,439 @@ function normalizeCropRect(cropRect, bitmap) {
   );
 
   return { left, top, width, height };
+}
+
+function calculateLuminance(r, g, b) {
+  return Math.round(0.2126 * r + 0.7152 * g + 0.0722 * b);
+}
+
+async function buildHistogramForFile(file) {
+  if (!file) return null;
+
+  if (typeof createImageBitmap !== "function") {
+    throw new Error(
+      "This browser does not support createImageBitmap in Web Workers.",
+    );
+  }
+
+  if (typeof OffscreenCanvas === "undefined") {
+    throw new Error("This browser does not support OffscreenCanvas.");
+  }
+
+  const bitmap = await createImageBitmap(file);
+
+  try {
+    const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+    const ctx = canvas.getContext("2d", {
+      alpha: false,
+      willReadFrequently: true,
+    });
+    if (!ctx) throw new Error("Cannot create histogram canvas context.");
+
+    ctx.drawImage(bitmap, 0, 0);
+    const imageData = ctx.getImageData(0, 0, bitmap.width, bitmap.height);
+    const { data } = imageData;
+
+    const bins = new Uint32Array(256);
+    for (let i = 0; i < data.length; i += 4) {
+      const luminance = calculateLuminance(data[i], data[i + 1], data[i + 2]);
+      bins[luminance] += 1;
+    }
+
+    let min = 0;
+    while (min < 255 && bins[min] === 0) min += 1;
+
+    let max = 255;
+    while (max > 0 && bins[max] === 0) max -= 1;
+
+    if (min > max) {
+      min = 0;
+      max = 255;
+    }
+
+    return {
+      bins: Array.from(bins),
+      min,
+      max,
+    };
+  } finally {
+    if (typeof bitmap.close === "function") bitmap.close();
+  }
+}
+
+async function buildComparisonHistogram(options) {
+  const leftFile = options?.leftFile || null;
+  const rightFile = options?.rightFile || null;
+
+  if (!leftFile && !rightFile) {
+    return {
+      leftBins: null,
+      rightBins: null,
+      globalBlack: 0,
+      globalWhite: 255,
+    };
+  }
+
+  const [leftHistogram, rightHistogram] = await Promise.all([
+    buildHistogramForFile(leftFile),
+    buildHistogramForFile(rightFile),
+  ]);
+
+  let globalBlack = 255;
+  let globalWhite = 0;
+  let hasData = false;
+
+  if (leftHistogram) {
+    hasData = true;
+    globalBlack = Math.min(globalBlack, leftHistogram.min);
+    globalWhite = Math.max(globalWhite, leftHistogram.max);
+  }
+
+  if (rightHistogram) {
+    hasData = true;
+    globalBlack = Math.min(globalBlack, rightHistogram.min);
+    globalWhite = Math.max(globalWhite, rightHistogram.max);
+  }
+
+  if (!hasData) {
+    globalBlack = 0;
+    globalWhite = 255;
+  }
+
+  return {
+    leftBins: leftHistogram?.bins || null,
+    rightBins: rightHistogram?.bins || null,
+    globalBlack,
+    globalWhite,
+  };
+}
+
+function getComparisonOutputInfo(leftFile, rightFile) {
+  const leftBase = (leftFile?.name || "left").replace(/\.[^/.]+$/, "");
+  const rightBase = (rightFile?.name || "right").replace(/\.[^/.]+$/, "");
+  return {
+    fileName: `comparison_${leftBase}_vs_${rightBase}.png`,
+    mimeType: "image/png",
+  };
+}
+
+function getComparisonLayout(options) {
+  const gap = Math.max(0, Math.floor(Number(options.gap) || 0));
+  const leftWidth = Math.max(
+    1,
+    Math.floor(Number(options.leftViewport?.width) || 1),
+  );
+  const leftHeight = Math.max(
+    1,
+    Math.floor(Number(options.leftViewport?.height) || 1),
+  );
+  const rightWidth = Math.max(
+    1,
+    Math.floor(Number(options.rightViewport?.width) || 1),
+  );
+  const rightHeight = Math.max(
+    1,
+    Math.floor(Number(options.rightViewport?.height) || 1),
+  );
+
+  return {
+    gap,
+    leftWidth,
+    leftHeight,
+    rightWidth,
+    rightHeight,
+    outputWidth: leftWidth + rightWidth + gap,
+    outputHeight: Math.max(leftHeight, rightHeight),
+  };
+}
+
+function getHistogramValueLinear(bins, toneIndex) {
+  const safeIndex = Math.min(255, Math.max(0, toneIndex));
+  const left = Math.floor(safeIndex);
+  const right = Math.min(255, left + 1);
+  const mix = safeIndex - left;
+  const leftValue = Number(bins[left] || 0);
+  const rightValue = Number(bins[right] || 0);
+  return leftValue + (rightValue - leftValue) * mix;
+}
+
+function drawSmoothHistogramOverlay(ctx, options) {
+  const bins = Array.isArray(options?.bins) ? options.bins : null;
+  if (!bins || !bins.length) return;
+
+  const paneWidth = Math.max(1, Math.floor(Number(options.paneWidth) || 1));
+  const paneHeight = Math.max(1, Math.floor(Number(options.paneHeight) || 1));
+  const title = String(options?.title || "Histogram");
+
+  const globalBlack = Math.max(
+    0,
+    Math.min(255, Math.floor(Number(options?.globalBlack) || 0)),
+  );
+  const globalWhite = Math.max(
+    0,
+    Math.min(255, Math.ceil(Number(options?.globalWhite) || 255)),
+  );
+  const start = Math.min(globalBlack, globalWhite);
+  const end = Math.max(globalBlack, globalWhite);
+
+  const overlayPadding = 12;
+  const overlayWidth = Math.min(paneWidth - overlayPadding * 2, 260);
+  const overlayHeight = Math.min(paneHeight - overlayPadding * 2, 92);
+  if (overlayWidth < 120 || overlayHeight < 56) return;
+
+  const x = overlayPadding;
+  const y = overlayPadding;
+  const innerPad = 8;
+  const graphX = x + innerPad;
+  const graphY = y + 20;
+  const graphWidth = Math.max(16, overlayWidth - innerPad * 2);
+  const graphHeight = Math.max(14, overlayHeight - 38);
+  const baselineY = graphY + graphHeight;
+
+  const range = Math.max(1, end - start);
+  const sampleCount = Math.max(512, graphWidth * 6);
+
+  let maxValue = 0;
+  for (let i = 0; i < sampleCount; i += 1) {
+    const tone = start + (i / (sampleCount - 1)) * range;
+    maxValue = Math.max(maxValue, getHistogramValueLinear(bins, tone));
+  }
+  maxValue = Math.max(1, maxValue);
+
+  ctx.save();
+  ctx.fillStyle = "rgba(15, 23, 42, 0.64)";
+  ctx.fillRect(x, y, overlayWidth, overlayHeight);
+
+  ctx.fillStyle = "rgba(241, 245, 249, 0.95)";
+  ctx.font = "600 10px sans-serif";
+  ctx.fillText(title, graphX, y + 12);
+
+  ctx.strokeStyle = "rgba(241, 245, 249, 0.45)";
+  ctx.strokeRect(graphX - 0.5, graphY - 0.5, graphWidth + 1, graphHeight + 1);
+
+  ctx.beginPath();
+  for (let i = 0; i < sampleCount; i += 1) {
+    const t = i / (sampleCount - 1);
+    const tone = start + t * range;
+    const value = getHistogramValueLinear(bins, tone);
+    const normalized = Math.pow(value / maxValue, 0.62);
+    const px = graphX + t * graphWidth;
+    const py = baselineY - normalized * graphHeight;
+    if (i === 0) ctx.moveTo(px, py);
+    else ctx.lineTo(px, py);
+  }
+
+  ctx.lineTo(graphX + graphWidth, baselineY);
+  ctx.lineTo(graphX, baselineY);
+  ctx.closePath();
+
+  ctx.fillStyle = "rgba(56, 189, 248, 0.42)";
+  ctx.fill();
+
+  ctx.beginPath();
+  for (let i = 0; i < sampleCount; i += 1) {
+    const t = i / (sampleCount - 1);
+    const tone = start + t * range;
+    const value = getHistogramValueLinear(bins, tone);
+    const normalized = Math.pow(value / maxValue, 0.62);
+    const px = graphX + t * graphWidth;
+    const py = baselineY - normalized * graphHeight;
+    if (i === 0) ctx.moveTo(px, py);
+    else ctx.lineTo(px, py);
+  }
+  ctx.strokeStyle = "rgba(125, 211, 252, 0.95)";
+  ctx.lineWidth = 1.25;
+  ctx.stroke();
+
+  ctx.fillStyle = "rgba(226, 232, 240, 0.88)";
+  ctx.font = "500 10px sans-serif";
+  ctx.fillText(`B ${start} | W ${end}`, graphX, y + overlayHeight - 8);
+  ctx.restore();
+}
+
+function calcComparisonPaneTransform(bitmap, viewport, zoom, pan) {
+  if (!bitmap || !viewport.width || !viewport.height) return null;
+
+  const fitScale = Math.min(
+    viewport.width / bitmap.width,
+    viewport.height / bitmap.height,
+  );
+  const effectiveScale = fitScale * Math.max(0.01, Number(zoom) || 1);
+  const drawWidth = bitmap.width * effectiveScale;
+  const drawHeight = bitmap.height * effectiveScale;
+
+  const minX = Math.min(0, viewport.width - drawWidth);
+  const minY = Math.min(0, viewport.height - drawHeight);
+
+  const panX = Number(pan?.x);
+  const panY = Number(pan?.y);
+  const safePanX = Number.isFinite(panX) ? panX : 0.5;
+  const safePanY = Number.isFinite(panY) ? panY : 0.5;
+
+  const rawX = viewport.width / 2 - safePanX * drawWidth;
+  const rawY = viewport.height / 2 - safePanY * drawHeight;
+
+  const tx =
+    drawWidth <= viewport.width
+      ? (viewport.width - drawWidth) / 2
+      : Math.min(0, Math.max(minX, rawX));
+  const ty =
+    drawHeight <= viewport.height
+      ? (viewport.height - drawHeight) / 2
+      : Math.min(0, Math.max(minY, rawY));
+
+  return {
+    drawWidth,
+    drawHeight,
+    tx,
+    ty,
+  };
+}
+
+function drawComparisonPane(ctx, bitmap, viewport, zoom, pan) {
+  if (!bitmap) return;
+
+  const transform = calcComparisonPaneTransform(bitmap, viewport, zoom, pan);
+  if (!transform) return;
+
+  ctx.drawImage(
+    bitmap,
+    transform.tx,
+    transform.ty,
+    transform.drawWidth,
+    transform.drawHeight,
+  );
+}
+
+async function exportComparison(options) {
+  if (typeof createImageBitmap !== "function") {
+    throw new Error(
+      "This browser does not support createImageBitmap in Web Workers.",
+    );
+  }
+
+  if (typeof OffscreenCanvas === "undefined") {
+    throw new Error("This browser does not support OffscreenCanvas.");
+  }
+
+  const layout = getComparisonLayout(options || {});
+  assertCanvasLimits(layout.outputWidth, layout.outputHeight);
+
+  const leftFile = options?.leftFile || null;
+  const rightFile = options?.rightFile || null;
+  const includeHistogram = Boolean(options?.includeHistogram);
+  const leftLabel = String(options?.leftLabel || "Ảnh A").trim() || "Ảnh A";
+  const rightLabel = String(options?.rightLabel || "Ảnh B").trim() || "Ảnh B";
+
+  if (!leftFile && !rightFile) {
+    throw new Error("No images provided for comparison export.");
+  }
+
+  let histogram = null;
+  if (includeHistogram) {
+    const hasProvidedBins =
+      Array.isArray(options?.leftBins) || Array.isArray(options?.rightBins);
+
+    if (hasProvidedBins) {
+      histogram = {
+        leftBins: Array.isArray(options?.leftBins) ? options.leftBins : null,
+        rightBins: Array.isArray(options?.rightBins) ? options.rightBins : null,
+        globalBlack: Math.max(
+          0,
+          Math.min(255, Number(options?.globalBlack) || 0),
+        ),
+        globalWhite: Math.max(
+          0,
+          Math.min(255, Number(options?.globalWhite) || 255),
+        ),
+      };
+    } else {
+      histogram = await buildComparisonHistogram({ leftFile, rightFile });
+    }
+  }
+
+  const [leftBitmap, rightBitmap] = await Promise.all([
+    leftFile ? createImageBitmap(leftFile) : Promise.resolve(null),
+    rightFile ? createImageBitmap(rightFile) : Promise.resolve(null),
+  ]);
+
+  try {
+    const canvas = new OffscreenCanvas(layout.outputWidth, layout.outputHeight);
+    const ctx = canvas.getContext("2d", { alpha: false });
+    if (!ctx) throw new Error("Cannot create comparison canvas context.");
+
+    const pageBg = getFillStyle(options?.backgroundColor || "#f1f5f9");
+    const stageBg = getFillStyle(options?.stageBackgroundColor || "#f1f5f9");
+
+    ctx.fillStyle = pageBg;
+    ctx.fillRect(0, 0, layout.outputWidth, layout.outputHeight);
+
+    ctx.save();
+    ctx.translate(0, 0);
+    ctx.fillStyle = stageBg;
+    ctx.fillRect(0, 0, layout.leftWidth, layout.leftHeight);
+    ctx.beginPath();
+    ctx.rect(0, 0, layout.leftWidth, layout.leftHeight);
+    ctx.clip();
+    drawComparisonPane(
+      ctx,
+      leftBitmap,
+      { width: layout.leftWidth, height: layout.leftHeight },
+      options?.zoom,
+      options?.pan,
+    );
+    if (includeHistogram && histogram?.leftBins) {
+      drawSmoothHistogramOverlay(ctx, {
+        bins: histogram.leftBins,
+        globalBlack: histogram.globalBlack,
+        globalWhite: histogram.globalWhite,
+        paneWidth: layout.leftWidth,
+        paneHeight: layout.leftHeight,
+        title: leftLabel,
+      });
+    }
+    ctx.restore();
+
+    ctx.save();
+    ctx.translate(layout.leftWidth + layout.gap, 0);
+    ctx.fillStyle = stageBg;
+    ctx.fillRect(0, 0, layout.rightWidth, layout.rightHeight);
+    ctx.beginPath();
+    ctx.rect(0, 0, layout.rightWidth, layout.rightHeight);
+    ctx.clip();
+    drawComparisonPane(
+      ctx,
+      rightBitmap,
+      { width: layout.rightWidth, height: layout.rightHeight },
+      options?.zoom,
+      options?.pan,
+    );
+    if (includeHistogram && histogram?.rightBins) {
+      drawSmoothHistogramOverlay(ctx, {
+        bins: histogram.rightBins,
+        globalBlack: histogram.globalBlack,
+        globalWhite: histogram.globalWhite,
+        paneWidth: layout.rightWidth,
+        paneHeight: layout.rightHeight,
+        title: rightLabel,
+      });
+    }
+    ctx.restore();
+
+    const output = getComparisonOutputInfo(leftFile, rightFile);
+    const blob = await canvas.convertToBlob({ type: output.mimeType });
+
+    return {
+      fileName: output.fileName,
+      mimeType: output.mimeType,
+      arrayBuffer: await blob.arrayBuffer(),
+    };
+  } finally {
+    if (leftBitmap && typeof leftBitmap.close === "function")
+      leftBitmap.close();
+    if (rightBitmap && typeof rightBitmap.close === "function")
+      rightBitmap.close();
+  }
 }
 
 async function exportCropResizeResize(file, options) {
@@ -584,9 +1034,18 @@ async function exportCropResizeCrop(file, options) {
     );
 
     const blob = await canvas.convertToBlob({ type: "image/png" });
-    const zoomLabel = String(options.zoomLabel || "10x").replace(/[^0-9a-zA-Z_-]+/g, "");
-    const aspectLabel = String(options.aspectLabel || "4x5").replace(/[^0-9a-zA-Z_-]+/g, "");
-    const output = getCropResizeOutputInfo(file.name, `crop_${zoomLabel}_${aspectLabel}`);
+    const zoomLabel = String(options.zoomLabel || "10x").replace(
+      /[^0-9a-zA-Z_-]+/g,
+      "",
+    );
+    const aspectLabel = String(options.aspectLabel || "4x5").replace(
+      /[^0-9a-zA-Z_-]+/g,
+      "",
+    );
+    const output = getCropResizeOutputInfo(
+      file.name,
+      `crop_${zoomLabel}_${aspectLabel}`,
+    );
 
     return {
       fileName: output.fileName,
@@ -608,7 +1067,9 @@ self.addEventListener("message", async (event) => {
       message.type !== "GRID_PROCESS" &&
       message.type !== "CROP_RESIZE_PREVIEW" &&
       message.type !== "CROP_RESIZE_EXPORT_RESIZE" &&
-      message.type !== "CROP_RESIZE_EXPORT_CROP")
+      message.type !== "CROP_RESIZE_EXPORT_CROP" &&
+      message.type !== "COMPARISON_HISTOGRAM" &&
+      message.type !== "COMPARISON_EXPORT")
   )
     return;
 
@@ -705,6 +1166,34 @@ self.addEventListener("message", async (event) => {
         },
         [result.arrayBuffer],
       );
+      return;
+    }
+
+    if (message.type === "COMPARISON_EXPORT") {
+      const result = await exportComparison(options || {});
+      self.postMessage(
+        {
+          type: "DONE",
+          id,
+          fileName: result.fileName,
+          mimeType: result.mimeType,
+          arrayBuffer: result.arrayBuffer,
+        },
+        [result.arrayBuffer],
+      );
+      return;
+    }
+
+    if (message.type === "COMPARISON_HISTOGRAM") {
+      const result = await buildComparisonHistogram(options || {});
+      self.postMessage({
+        type: "DONE",
+        id,
+        leftBins: result.leftBins,
+        rightBins: result.rightBins,
+        globalBlack: result.globalBlack,
+        globalWhite: result.globalWhite,
+      });
       return;
     }
 
