@@ -178,6 +178,38 @@ const MENU_ITEMS = [
       </svg>
     ),
   },
+  {
+    key: "nas-sync",
+    href: "/nas-sync",
+    title: "NAS Sync",
+    subtitle:
+      "Kết nối Synology NAS qua WebDAV, duyệt hai cây folder song song và tạo thư mục mirror ở cả hai bên",
+    accent: "from-teal-500 via-cyan-400 to-blue-300",
+    icon: (
+      <svg viewBox="0 0 120 120" className="h-28 w-28" aria-hidden>
+        <rect x="10" y="16" width="100" height="88" rx="14" fill="#fff" />
+        <rect x="20" y="30" width="34" height="58" rx="7" fill="#99f6e4" />
+        <rect x="66" y="30" width="34" height="58" rx="7" fill="#bfdbfe" />
+        <path
+          d="M56 47h8M60 43v8M56 73h8M60 69v8"
+          stroke="#111"
+          strokeWidth="3.5"
+          strokeLinecap="round"
+        />
+        <line x1="60" y1="34" x2="60" y2="86" stroke="#111" strokeWidth="3" />
+        <rect
+          x="10"
+          y="16"
+          width="100"
+          height="88"
+          rx="14"
+          fill="none"
+          stroke="#111"
+          strokeWidth="6"
+        />
+      </svg>
+    ),
+  },
 ];
 
 export default function HomePage() {
@@ -192,14 +224,13 @@ export default function HomePage() {
             Chọn công cụ bạn muốn dùng
           </h1>
           <p className="mx-auto mt-3 max-w-2xl text-sm text-slate-600 sm:text-base">
-            Home gồm 5 menu lớn: Border, Crop & Resize, SCRL, Grid và
-            Comparison. Border thêm viền, Crop & Resize xử lý một ảnh gốc cực
-            lớn, SCRL cắt carousel theo frame liên tiếp, Grid ghép layout theo
-            ô, Comparison để soi hai phiên bản ảnh bằng zoom/pan đồng bộ.
+            Home gồm 6 menu lớn: Border, Crop & Resize, SCRL, Grid, Comparison
+            và NAS Sync. NAS Sync hỗ trợ kết nối Synology NAS để duyệt hai cây
+            thư mục tương ứng và tạo thư mục đồng bộ ở cả hai bên.
           </p>
         </header>
 
-        <section className="grid grid-cols-1 gap-5 md:grid-cols-2 xl:grid-cols-5">
+        <section className="grid grid-cols-1 gap-5 md:grid-cols-2 xl:grid-cols-3">
           {MENU_ITEMS.map((item) => (
             <Link
               key={item.key}
