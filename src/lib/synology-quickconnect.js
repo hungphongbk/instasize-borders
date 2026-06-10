@@ -5,6 +5,10 @@ function normalizePath(pathname) {
   return compact || "/";
 }
 
+function basename(pathname) {
+  return normalizePath(pathname).split("/").filter(Boolean).at(-1) || "";
+}
+
 function joinPath(...parts) {
   const merged = parts
     .map((part) => String(part || "").trim())
@@ -331,6 +335,60 @@ async function fileStationRequest({
   return result.json;
 }
 
+async function fileStationRawRequest({
+  baseUrl,
+  sid,
+  api,
+  version,
+  method,
+  extra = {},
+}) {
+  const params = new URLSearchParams({
+    api,
+    version: String(version),
+    method,
+    _sid: sid,
+    ...extra,
+  });
+
+  const url = `${baseUrl}/webapi/entry.cgi?${params.toString()}`;
+  const response = await fetch(url, {
+    method: "GET",
+    cache: "no-store",
+    redirect: "follow",
+  });
+
+  if (!response.ok) {
+    const details = await response.text().catch(() => "");
+    throw new Error(
+      `FileStation raw request failed (${response.status}). ${details || "No details"}`,
+    );
+  }
+
+  return response;
+}
+
+function isImageName(name) {
+  return /\.(jpg|jpeg|png|webp|gif|bmp|tif|tiff|heic|heif|avif)$/i.test(
+    String(name || ""),
+  );
+}
+
+function normalizeImageEntry(entry, parentPath) {
+  const itemPath = normalizePath(
+    entry?.path || joinPath(parentPath, entry?.name),
+  );
+  const name = String(entry?.name || basename(itemPath)).trim();
+  if (!name || !isImageName(name)) return null;
+
+  return {
+    name,
+    path: itemPath,
+    size: Number(entry?.additional?.size || 0),
+    modifiedTime: Number(entry?.additional?.time?.mtime || 0),
+  };
+}
+
 export async function quickConnectListFolders({ baseUrl, sid, path }) {
   const normalizedPath = normalizePath(path || "/");
   let folders = [];
@@ -396,6 +454,193 @@ export async function quickConnectListFolders({ baseUrl, sid, path }) {
     path: normalizedPath,
     folders,
   };
+}
+
+export async function quickConnectListEntries({ baseUrl, sid, path }) {
+  const normalizedPath = normalizePath(path || "/");
+  let folders = [];
+  let files = [];
+
+  if (normalizedPath === "/") {
+    try {
+      const sharesJson = await fileStationRequest({
+        baseUrl,
+        sid,
+        api: "SYNO.FileStation.List",
+        version: 2,
+        method: "list_share",
+        extra: {
+          additional: "real_path",
+        },
+      });
+
+      const shares = Array.isArray(sharesJson.data?.shares)
+        ? sharesJson.data.shares
+        : [];
+
+      folders = shares
+        .map((share) => {
+          const shareName = String(share?.name || "").trim();
+          const sharePath = normalizePath(share?.path || `/${shareName}`);
+          return {
+            name: shareName || basename(sharePath),
+            path: sharePath,
+          };
+        })
+        .filter((item) => Boolean(item.name))
+        .sort((a, b) => a.name.localeCompare(b.name));
+    } catch {
+      // Fall back to standard list below for DSM variants that do not expose list_share.
+    }
+  }
+
+  if (folders.length === 0 || normalizedPath !== "/") {
+    const json = await fileStationRequest({
+      baseUrl,
+      sid,
+      api: "SYNO.FileStation.List",
+      version: 2,
+      method: "list",
+      extra: {
+        folder_path: normalizedPath,
+        additional: "real_path,size,time",
+      },
+    });
+
+    const entries = Array.isArray(json.data?.files) ? json.data.files : [];
+
+    folders = entries
+      .filter((item) => item?.isdir)
+      .map((item) => ({
+        name: item.name,
+        path: normalizePath(item.path || joinPath(normalizedPath, item.name)),
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+
+    files = entries
+      .filter((item) => !item?.isdir)
+      .map((item) => normalizeImageEntry(item, normalizedPath))
+      .filter(Boolean)
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  return {
+    ok: true,
+    path: normalizedPath,
+    folders,
+    files,
+  };
+}
+
+function parseContentDispositionFileName(value, fallbackPath) {
+  const header = String(value || "");
+  const star = header.match(/filename\*=UTF-8''([^;]+)/i);
+  if (star?.[1]) {
+    try {
+      return decodeURIComponent(star[1]);
+    } catch {
+      return star[1];
+    }
+  }
+
+  const plain = header.match(/filename="?([^";]+)"?/i);
+  if (plain?.[1]) return plain[1];
+
+  return basename(fallbackPath) || "image";
+}
+
+export async function quickConnectReadFile({ baseUrl, sid, path }) {
+  const result = await quickConnectReadFileStream({ baseUrl, sid, path });
+
+  if (!result.body) {
+    throw new Error("File stream is empty.");
+  }
+
+  const buffered = await new Response(result.body).arrayBuffer();
+
+  return {
+    ok: true,
+    arrayBuffer: buffered,
+    contentType: result.contentType,
+    fileName: result.fileName,
+  };
+}
+
+export async function quickConnectReadFileStream({ baseUrl, sid, path }) {
+  const normalizedPath = normalizePath(path || "/");
+
+  const response = await fileStationRawRequest({
+    baseUrl,
+    sid,
+    api: "SYNO.FileStation.Download",
+    version: 2,
+    method: "download",
+    extra: {
+      path: JSON.stringify([normalizedPath]),
+      mode: "open",
+    },
+  });
+
+  return {
+    ok: true,
+    body: response.body,
+    contentType:
+      response.headers.get("content-type") || "application/octet-stream",
+    fileName: parseContentDispositionFileName(
+      response.headers.get("content-disposition"),
+      normalizedPath,
+    ),
+    contentLength: response.headers.get("content-length"),
+  };
+}
+
+export async function quickConnectReadThumbnail({
+  baseUrl,
+  sid,
+  path,
+  size = "small",
+}) {
+  const normalizedPath = normalizePath(path || "/");
+  const allowedSize = ["small", "medium", "large"].includes(size)
+    ? size
+    : "small";
+
+  try {
+    const response = await fileStationRawRequest({
+      baseUrl,
+      sid,
+      api: "SYNO.FileStation.Thumb",
+      version: 2,
+      method: "get",
+      extra: {
+        path: JSON.stringify([normalizedPath]),
+        size: allowedSize,
+      },
+    });
+
+    return {
+      ok: true,
+      arrayBuffer: await response.arrayBuffer(),
+      contentType:
+        response.headers.get("content-type") || "application/octet-stream",
+      fileName: parseContentDispositionFileName(
+        response.headers.get("content-disposition"),
+        normalizedPath,
+      ),
+      source: "thumb",
+    };
+  } catch {
+    const fallback = await quickConnectReadFile({
+      baseUrl,
+      sid,
+      path: normalizedPath,
+    });
+
+    return {
+      ...fallback,
+      source: "download",
+    };
+  }
 }
 
 export async function quickConnectMirrorCreate({

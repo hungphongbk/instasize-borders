@@ -2,11 +2,15 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
+import NasFilePicker from "@/components/nas-file-picker";
 
 const MAX_FILE_BYTES = 1024 * 1024 * 1024;
 const PREVIEW_MAX_EDGE = 1800;
 const WARNING_WORKING_SET_BYTES = 768 * 1024 * 1024;
-const ZOOM_OPTIONS = [5, 10, 20];
+const MIN_ZOOM_LEVEL = 1;
+const MAX_ZOOM_LEVEL = 24;
+const ZOOM_WHEEL_FACTOR = 0.0028;
+const ZOOM_BUTTON_STEP = 1.12;
 const ASPECT_OPTIONS = [
   {
     value: "4:5",
@@ -42,6 +46,24 @@ function parseAspectRatio(value) {
   const [width, height] = String(value).split(":").map(Number);
   if (!width || !height) return 4 / 5;
   return width / height;
+}
+
+function formatZoomLabel(zoomValue) {
+  return `${zoomValue.toFixed(zoomValue >= 10 ? 1 : 2)}x`;
+}
+
+function zoomToSliderValue(zoomValue) {
+  const min = Math.log(MIN_ZOOM_LEVEL);
+  const max = Math.log(MAX_ZOOM_LEVEL);
+  const current = Math.log(clamp(zoomValue, MIN_ZOOM_LEVEL, MAX_ZOOM_LEVEL));
+  return ((current - min) / (max - min)) * 100;
+}
+
+function sliderValueToZoom(value) {
+  const min = Math.log(MIN_ZOOM_LEVEL);
+  const max = Math.log(MAX_ZOOM_LEVEL);
+  const ratio = clamp(value, 0, 100) / 100;
+  return Math.exp(min + (max - min) * ratio);
 }
 
 function buildCropSize(imageWidth, imageHeight, aspectRatio, zoomLevel) {
@@ -162,7 +184,7 @@ export default function CropResizePage() {
   const [sourceFile, setSourceFile] = useState(null);
   const [imageInfo, setImageInfo] = useState(null);
   const [previewUrl, setPreviewUrl] = useState("");
-  const [zoomLevel, setZoomLevel] = useState(10);
+  const [zoomLevel, setZoomLevel] = useState(8);
   const [aspectRatio, setAspectRatio] = useState("4:5");
   const [cropCenter, setCropCenter] = useState({ x: 0.5, y: 0.5 });
   const [stageSize, setStageSize] = useState({ width: 0, height: 0 });
@@ -293,6 +315,33 @@ export default function CropResizePage() {
 
   const isBusy = uploadState === "uploading" || actionState !== "idle";
 
+  const zoomSliderValue = useMemo(
+    () => zoomToSliderValue(zoomLevel),
+    [zoomLevel],
+  );
+
+  const setClampedZoom = (nextZoom) => {
+    setZoomLevel(clamp(nextZoom, MIN_ZOOM_LEVEL, MAX_ZOOM_LEVEL));
+  };
+
+  const adjustZoomWithFactor = (factor) => {
+    setZoomLevel((prev) =>
+      clamp(prev * factor, MIN_ZOOM_LEVEL, MAX_ZOOM_LEVEL),
+    );
+  };
+
+  const onStageWheel = (event) => {
+    if (!imageInfo) return;
+    event.preventDefault();
+    setZoomLevel((prev) =>
+      clamp(
+        prev * Math.exp(-event.deltaY * ZOOM_WHEEL_FACTOR),
+        MIN_ZOOM_LEVEL,
+        MAX_ZOOM_LEVEL,
+      ),
+    );
+  };
+
   const clearCurrentImage = () => {
     setSourceFile(null);
     setImageInfo(null);
@@ -390,6 +439,12 @@ export default function CropResizePage() {
     );
 
     await uploadFile(nextFile);
+  };
+
+  const onNasImport = async (files) => {
+    const selectedFile = Array.isArray(files) ? files[0] : null;
+    if (!selectedFile) return;
+    await uploadFile(selectedFile);
   };
 
   const withStagePoint = (event) => {
@@ -615,6 +670,13 @@ export default function CropResizePage() {
                       Xoá ảnh hiện tại
                     </button>
                   ) : null}
+
+                  <NasFilePicker
+                    onImport={(files) => void onNasImport(files)}
+                    disabled={uploadState === "uploading" || actionState !== "idle"}
+                    selectionMode="single"
+                    importButtonLabel="Use selected image"
+                  />
                 </div>
               </div>
 
@@ -698,6 +760,7 @@ export default function CropResizePage() {
                     ref={stageRef}
                     style={{ aspectRatio: `${imageInfo.width} / ${imageInfo.height}` }}
                     className="relative overflow-hidden rounded-[24px] border border-slate-200 bg-slate-100"
+                    onWheel={onStageWheel}
                   >
                     <img
                       src={previewUrl}
@@ -730,7 +793,7 @@ export default function CropResizePage() {
                         }}
                       >
                         <div className="absolute left-3 top-3 rounded-full bg-white/90 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-900">
-                          {zoomLevel}x · {aspectRatio}
+                          {formatZoomLabel(zoomLevel)} · {aspectRatio}
                         </div>
                         <div className="absolute left-1/2 top-1/2 h-4 w-4 -translate-x-1/2 -translate-y-1/2 rounded-full border border-white/70 bg-white/30 backdrop-blur" />
                       </div>
@@ -753,22 +816,47 @@ export default function CropResizePage() {
                 <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
                   Zoom level
                 </p>
-                <div className="mt-3 grid grid-cols-3 gap-2">
-                  {ZOOM_OPTIONS.map((option) => (
+                <div className="mt-3 space-y-3">
+                  <div className="flex items-center gap-2">
                     <button
-                      key={option}
                       type="button"
-                      onClick={() => setZoomLevel(option)}
+                      onClick={() => adjustZoomWithFactor(1 / ZOOM_BUTTON_STEP)}
                       disabled={!imageInfo}
-                      className={`rounded-2xl px-3 py-3 text-sm font-medium transition ${
-                        zoomLevel === option
-                          ? "bg-slate-950 text-white"
-                          : "border border-slate-200 bg-white text-slate-700 hover:border-slate-300 hover:text-slate-950"
-                      } disabled:cursor-not-allowed disabled:opacity-60`}
+                      className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:border-slate-300 hover:text-slate-950 disabled:cursor-not-allowed disabled:opacity-60"
                     >
-                      {option}x
+                      -
                     </button>
-                  ))}
+                    <input
+                      type="range"
+                      min={0}
+                      max={100}
+                      step={1}
+                      value={zoomSliderValue}
+                      onChange={(event) =>
+                        setClampedZoom(sliderValueToZoom(Number(event.target.value)))
+                      }
+                      disabled={!imageInfo}
+                      className="h-2 w-full cursor-pointer appearance-none rounded-full bg-slate-200 disabled:cursor-not-allowed"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => adjustZoomWithFactor(ZOOM_BUTTON_STEP)}
+                      disabled={!imageInfo}
+                      className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:border-slate-300 hover:text-slate-950 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      +
+                    </button>
+                  </div>
+                  <div className="flex items-center justify-between text-xs text-slate-500">
+                    <span>{formatZoomLabel(MIN_ZOOM_LEVEL)}</span>
+                    <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 font-medium text-slate-700">
+                      {formatZoomLabel(zoomLevel)}
+                    </span>
+                    <span>{formatZoomLabel(MAX_ZOOM_LEVEL)}</span>
+                  </div>
+                  <p className="text-xs text-slate-500">
+                    Zoom mượt kiểu macOS: cuộn chuột/trackpad trực tiếp trên ảnh để zoom in/out liên tục.
+                  </p>
                 </div>
               </div>
 
@@ -805,7 +893,7 @@ export default function CropResizePage() {
                       Khung crop hiện tại tương đương <strong>{cropOutputLabel}</strong> trên ảnh gốc.
                     </p>
                     <p>
-                      5x lấy vùng lớn nhất, 10x và 20x thu nhỏ khung theo cùng aspect ratio để zoom sâu hơn. Export mặc định ra PNG để tránh thêm một vòng nén lossy trong browser.
+                      Zoom giờ là liên tục thay vì preset cố định, giúp thao tác giống macOS hơn khi dùng trackpad/chuột. Export mặc định ra PNG để tránh thêm một vòng nén lossy trong browser.
                     </p>
                   </div>
                 ) : (
@@ -824,7 +912,7 @@ export default function CropResizePage() {
                 </div>
 
                 <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-medium text-slate-700">
-                  {zoomLevel}x · {aspectRatio}
+                  {formatZoomLabel(zoomLevel)} · {aspectRatio}
                 </span>
               </div>
 
@@ -898,7 +986,7 @@ export default function CropResizePage() {
                     disabled={!imageInfo || isBusy}
                     className="mt-4 inline-flex w-full items-center justify-center rounded-2xl bg-gradient-to-r from-amber-500 via-orange-500 to-rose-500 px-4 py-3 text-sm font-medium text-white transition hover:brightness-105 disabled:cursor-not-allowed disabled:from-slate-400 disabled:via-slate-400 disabled:to-slate-400"
                   >
-                    {actionState === "cropping" ? "Đang export crop..." : `Export crop ${zoomLevel}x / ${aspectRatio}`}
+                    {actionState === "cropping" ? "Đang export crop..." : `Export crop ${formatZoomLabel(zoomLevel)} / ${aspectRatio}`}
                   </button>
                 </div>
               </div>

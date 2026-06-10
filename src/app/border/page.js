@@ -1,34 +1,11 @@
 "use client";
 
+import NasFilePicker from "@/components/nas-file-picker";
 import JSZip from "jszip";
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 const MAX_WORKERS = 6;
-
-function parseRatio(ratio) {
-  if (ratio === "4:5") return 4 / 5;
-  return ratio === "16:9" ? 16 / 9 : 1;
-}
-
-function buildTargetSize(width, height, ratio, extraPx) {
-  const targetRatio = parseRatio(ratio);
-
-  let canvasW = Math.max(width, Math.ceil(height * targetRatio));
-  let canvasH = Math.max(height, Math.ceil(width / targetRatio));
-
-  if (Math.abs(canvasW / canvasH - targetRatio) > 1e-6) {
-    if (canvasW / canvasH > targetRatio)
-      canvasH = Math.ceil(canvasW / targetRatio);
-    else canvasW = Math.ceil(canvasH * targetRatio);
-  }
-
-  const extra = Math.max(0, Math.floor(Number(extraPx) || 0));
-  return {
-    width: canvasW + extra * 2,
-    height: canvasH + extra * 2,
-  };
-}
 
 function formatBytes(bytes) {
   if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
@@ -113,6 +90,7 @@ export default function HomePage() {
   const [previewStatus, setPreviewStatus] = useState("idle");
   const [previewTick, setPreviewTick] = useState(0);
   const [canPickDirectory, setCanPickDirectory] = useState(false);
+
   const inputRef = useRef(null);
   const itemsRef = useRef([]);
   const previewGenerationRef = useRef(0);
@@ -164,49 +142,32 @@ export default function HomePage() {
     return Math.max(1, Math.min(MAX_WORKERS, hw - 1));
   }, []);
 
-  const onFiles = (files) => {
-    if (!files) return;
-    const next = [];
-    for (const f of Array.from(files)) {
-      if (!f.type.startsWith("image/")) continue;
-      const sourceUrl = URL.createObjectURL(f);
-      next.push({
-        file: f,
-        sourceUrl,
-        previewUrl: sourceUrl,
-        borderColor,
-        extraPx,
-        ratio: globalRatio,
-        hasRenderedPreview: false,
-      });
-    }
-    setItems((prev) => [...prev, ...next]);
-    setPreviewTick((v) => v + 1);
-    if (inputRef.current) inputRef.current.value = "";
-  };
+  const onFiles = useCallback(
+    (files) => {
+      if (!files) return;
 
-  const onGlobalRatioChange = (value) => {
-    setGlobalRatio(value);
-    setItems((prev) => prev.map((it) => ({ ...it, ratio: value })));
-    setPreviewTick((v) => v + 1);
-  };
+      const next = [];
+      for (const f of Array.from(files)) {
+        if (!f.type.startsWith("image/")) continue;
+        const sourceUrl = URL.createObjectURL(f);
+        next.push({
+          file: f,
+          sourceUrl,
+          previewUrl: sourceUrl,
+          borderColor,
+          extraPx,
+          ratio: globalRatio,
+          hasRenderedPreview: false,
+        });
+      }
 
-  const removeItem = (idx) => {
-    setItems((prev) => {
-      URL.revokeObjectURL(prev[idx].sourceUrl);
-      if (prev[idx].hasRenderedPreview)
-        URL.revokeObjectURL(prev[idx].previewUrl);
-      const arr = [...prev];
-      arr.splice(idx, 1);
-      return arr;
-    });
-  };
-
-  const buildOptions = (it) => ({
-    ratio: it.ratio,
-    borderColor: it.borderColor,
-    extraPx: it.extraPx,
-  });
+      if (!next.length) return;
+      setItems((prev) => [...prev, ...next]);
+      setPreviewTick((v) => v + 1);
+      if (inputRef.current) inputRef.current.value = "";
+    },
+    [borderColor, extraPx, globalRatio],
+  );
 
   const refreshPreviews = useCallback(
     async (snapshot, generation) => {
@@ -216,7 +177,6 @@ export default function HomePage() {
       }
 
       setPreviewStatus("rendering");
-
       const previewWorkers = Math.max(1, Math.min(3, workerCount));
       const tasks = snapshot.map(
         (it, index) => async (worker) =>
@@ -235,9 +195,7 @@ export default function HomePage() {
 
       try {
         const results = await runWorkerPool(tasks, previewWorkers, () => {});
-        if (previewGenerationRef.current !== generation) {
-          return;
-        }
+        if (previewGenerationRef.current !== generation) return;
 
         const nextPreviewMap = new Map();
         results.forEach((res) => {
@@ -262,7 +220,7 @@ export default function HomePage() {
           }),
         );
       } catch {
-        // Keep fallback original preview if preview rendering fails.
+        // Keep original preview when worker preview fails.
       } finally {
         if (previewGenerationRef.current === generation) {
           setPreviewStatus("idle");
@@ -272,22 +230,38 @@ export default function HomePage() {
     [workerCount],
   );
 
-  const processSingleDownload = async (it) => {
+  const buildOptions = (item) => ({
+    ratio: item.ratio,
+    borderColor: item.borderColor,
+    extraPx: item.extraPx,
+  });
+
+  const removeItem = (idx) => {
+    setItems((prev) => {
+      URL.revokeObjectURL(prev[idx].sourceUrl);
+      if (prev[idx].hasRenderedPreview) {
+        URL.revokeObjectURL(prev[idx].previewUrl);
+      }
+      const arr = [...prev];
+      arr.splice(idx, 1);
+      return arr;
+    });
+  };
+
+  const processSingleDownload = async (item) => {
     setStatus("single");
     setProgress({ done: 0, total: 1 });
 
     let worker;
-
     try {
       worker = new Worker("/workers/image-processor.worker.js");
       const out = await requestWorker(worker, {
         type: "PROCESS",
-        file: it.file,
-        options: buildOptions(it),
+        file: item.file,
+        options: buildOptions(item),
       });
 
       const outBlob = new Blob([out.arrayBuffer], { type: out.mimeType });
-
       const url = URL.createObjectURL(outBlob);
       const a = document.createElement("a");
       a.href = url;
@@ -319,11 +293,7 @@ export default function HomePage() {
           requestWorker(worker, {
             type: "PROCESS",
             file: it.file,
-            options: {
-              ratio: it.ratio,
-              borderColor: it.borderColor,
-              extraPx: it.extraPx,
-            },
+            options: buildOptions(it),
           }),
       );
 
@@ -371,9 +341,7 @@ export default function HomePage() {
 
     let directoryHandle;
     try {
-      directoryHandle = await window.showDirectoryPicker({
-        mode: "readwrite",
-      });
+      directoryHandle = await window.showDirectoryPicker({ mode: "readwrite" });
     } catch {
       return;
     }
@@ -387,11 +355,7 @@ export default function HomePage() {
           requestWorker(worker, {
             type: "PROCESS",
             file: it.file,
-            options: {
-              ratio: it.ratio,
-              borderColor: it.borderColor,
-              extraPx: it.extraPx,
-            },
+            options: buildOptions(it),
           }),
       );
 
@@ -426,6 +390,7 @@ export default function HomePage() {
     () => items.reduce((sum, item) => sum + (item.file.size || 0), 0),
     [items],
   );
+
   useEffect(() => {
     if (previewTick === 0 || isBusy) return;
 
@@ -448,11 +413,11 @@ export default function HomePage() {
     return () => {
       window.clearTimeout(timer);
     };
-  }, [previewTick, isBusy, workerCount, refreshPreviews]);
+  }, [previewTick, isBusy, refreshPreviews]);
 
   return (
     <main className="min-h-screen bg-gray-50">
-      <div className="mx-auto max-w-5xl p-6">
+      <div className="mx-auto max-w-6xl p-6">
         <header className="mb-6">
           <div className="mb-3 flex flex-wrap gap-2">
             <Link
@@ -473,14 +438,19 @@ export default function HomePage() {
             >
               Grid
             </Link>
+            <Link
+              href="/nas-sync"
+              className="rounded-lg border border-gray-300 bg-white px-3 py-1 text-xs text-gray-700 hover:bg-gray-100"
+            >
+              NAS Sync
+            </Link>
           </div>
           <h1 className="text-2xl font-semibold">
             InstaSize Borders Offline (1:1 / 4:5 / 16:9)
           </h1>
           <p className="text-sm text-gray-600">
             Images are processed directly in your browser with local CPU
-            workers. No upload to server is needed, so this can run offline
-            after first load.
+            workers.
           </p>
           <div className="mt-3 flex flex-wrap gap-2 text-xs">
             <span
@@ -498,44 +468,51 @@ export default function HomePage() {
             <span className="rounded-full bg-slate-200 px-3 py-1 text-slate-800">
               Input size: {formatBytes(totalInputBytes)}
             </span>
-            {previewStatus === "rendering" && (
+            {previewStatus === "rendering" ? (
               <span className="rounded-full bg-amber-100 px-3 py-1 text-amber-900">
                 Updating previews...
               </span>
-            )}
-            {isInstalled && (
+            ) : null}
+            {isInstalled ? (
               <span className="rounded-full bg-violet-100 px-3 py-1 text-violet-900">
                 Installed app
               </span>
-            )}
+            ) : null}
           </div>
         </header>
 
-        <div className="mb-6 rounded-lg border-2 border-dashed border-gray-300 bg-white p-6">
-          <input
-            ref={inputRef}
-            type="file"
-            accept="image/*"
-            multiple
-            onChange={(e) => onFiles(e.target.files)}
-            disabled={isBusy}
-            className="block w-full text-sm"
-          />
+        <div className="mb-6 rounded-lg border border-gray-200 bg-white p-5 shadow-sm">
+          <div className="flex flex-wrap items-center gap-3">
+            <input
+              ref={inputRef}
+              type="file"
+              accept="image/*"
+              multiple
+              onChange={(e) => onFiles(e.target.files)}
+              disabled={isBusy}
+              className="block w-full text-sm sm:w-auto"
+            />
+            <NasFilePicker onImport={onFiles} disabled={isBusy} />
+          </div>
           <p className="mt-2 text-xs text-gray-500">
-            Tip: You can re-upload more images; they’ll be appended.
+            Tip: You can append images from both local computer and NAS.
           </p>
         </div>
 
-        {/* Global border color & extra border controls */}
         <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-end">
           <div>
-            <label className="block text-sm font-medium mb-1">
+            <label className="mb-1 block text-sm font-medium">
               Aspect ratio (all images)
             </label>
             <select
               value={globalRatio}
               disabled={isBusy}
-              onChange={(e) => onGlobalRatioChange(e.target.value)}
+              onChange={(e) => {
+                const value = e.target.value;
+                setGlobalRatio(value);
+                setItems((prev) => prev.map((it) => ({ ...it, ratio: value })));
+                setPreviewTick((v) => v + 1);
+              }}
               className="rounded border px-2 py-1 text-sm"
             >
               <option value="1:1">1 : 1</option>
@@ -543,8 +520,9 @@ export default function HomePage() {
               <option value="16:9">16 : 9</option>
             </select>
           </div>
+
           <div>
-            <label className="block text-sm font-medium mb-1">
+            <label className="mb-1 block text-sm font-medium">
               Border color
             </label>
             <input
@@ -562,8 +540,9 @@ export default function HomePage() {
               aria-label="Border color"
             />
           </div>
+
           <div className="flex-1">
-            <label className="block text-sm font-medium mb-1">
+            <label className="mb-1 block text-sm font-medium">
               Extra border (px)
             </label>
             <input
@@ -583,16 +562,12 @@ export default function HomePage() {
               }}
               className="w-full rounded border px-2 py-1 text-sm"
             />
-            <p className="mt-1 text-xs text-gray-500">
-              Optional extra padding added beyond what’s required to reach the
-              ratio.
-            </p>
           </div>
         </div>
 
-        {totalCount > 0 && (
+        {totalCount > 0 ? (
           <>
-            <div className="mb-4 flex items-center justify-between">
+            <div className="mb-4 flex flex-wrap items-center gap-3">
               <p className="text-sm text-gray-700">
                 {totalCount} image{totalCount > 1 ? "s" : ""} ready
               </p>
@@ -600,7 +575,6 @@ export default function HomePage() {
                 onClick={processAndDownload}
                 className="rounded-md bg-black px-4 py-2 text-white hover:bg-gray-800"
                 disabled={isBusy}
-                title="Process locally and download ZIP"
               >
                 {status === "batch"
                   ? "Processing..."
@@ -608,11 +582,11 @@ export default function HomePage() {
               </button>
               <button
                 onClick={processAndSaveAsFiles}
-                className="rounded-md bg-white px-4 py-2 text-black border border-gray-300 hover:bg-gray-100 disabled:opacity-50"
+                className="rounded-md border border-gray-300 bg-white px-4 py-2 text-black hover:bg-gray-100 disabled:opacity-50"
                 disabled={isBusy}
                 title={
                   canPickDirectory
-                    ? "Pick a folder once, then save every processed image as a separate file"
+                    ? "Pick one folder and save processed images there"
                     : "Folder save is not available in this browser"
                 }
               >
@@ -620,8 +594,8 @@ export default function HomePage() {
               </button>
             </div>
 
-            {isBusy && (
-              <div className="mb-4 rounded-md bg-white p-3 text-sm shadow-sm border">
+            {isBusy ? (
+              <div className="mb-4 rounded-md border bg-white p-3 text-sm shadow-sm">
                 <div className="mb-2 flex items-center justify-between">
                   <span>
                     {status === "batch"
@@ -645,7 +619,7 @@ export default function HomePage() {
                   />
                 </div>
               </div>
-            )}
+            ) : null}
 
             <ul className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
               {items.map((it, idx) => (
@@ -674,40 +648,31 @@ export default function HomePage() {
                       onClick={() => removeItem(idx)}
                       disabled={isBusy}
                       className="absolute right-2 top-2 rounded-full bg-white/90 px-2 py-1 text-xs shadow hover:bg-white"
-                      title="Remove this image"
                     >
                       X
                     </button>
                     <button
                       onClick={() => processSingleDownload(it)}
                       disabled={isBusy}
-                      className="absolute left-2 top-2 rounded-full bg-white/90 px-2 py-1 text-xs shadow hover:bg-white border border-gray-300"
-                      title="Download this image with border"
+                      className="absolute left-2 top-2 rounded-full border border-gray-300 bg-white/90 px-2 py-1 text-xs shadow hover:bg-white"
                     >
                       Save
                     </button>
                   </div>
 
-                  <div className="space-y-3">
-                    <div className="text-[11px] text-gray-500">
-                      Preview: compressed thumbnail (for fast UI)
-                    </div>
-                    <div className="flex items-center justify-between text-sm">
-                      <span className="font-medium">Aspect ratio</span>
-                      <span className="rounded bg-gray-100 px-2 py-1 text-xs">
-                        {globalRatio}
-                      </span>
-                    </div>
-
-                    <div className="text-[11px] text-gray-500">
-                      File: {it.file.name}
-                    </div>
+                  <div className="space-y-2">
+                    <p className="truncate text-[11px] text-gray-500">
+                      {it.file.name}
+                    </p>
+                    <p className="text-[11px] text-gray-500">
+                      Preview thumbnail
+                    </p>
                   </div>
                 </li>
               ))}
             </ul>
           </>
-        )}
+        ) : null}
       </div>
     </main>
   );
