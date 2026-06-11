@@ -342,6 +342,8 @@ async function fileStationRawRequest({
   version,
   method,
   extra = {},
+  timeoutMs = 30000,
+  retries = 2,
 }) {
   const params = new URLSearchParams({
     api,
@@ -352,20 +354,60 @@ async function fileStationRawRequest({
   });
 
   const url = `${baseUrl}/webapi/entry.cgi?${params.toString()}`;
-  const response = await fetch(url, {
-    method: "GET",
-    cache: "no-store",
-    redirect: "follow",
-  });
+  
+  let lastError;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
-  if (!response.ok) {
-    const details = await response.text().catch(() => "");
-    throw new Error(
-      `FileStation raw request failed (${response.status}). ${details || "No details"}`,
-    );
+      const response = await fetch(url, {
+        method: "GET",
+        cache: "no-store",
+        redirect: "follow",
+        signal: controller.signal,
+        headers: {
+          "Accept-Encoding": "gzip, deflate",
+          "Connection": "keep-alive",
+        },
+      });
+
+      clearTimeout(timeoutId);
+
+      if (!response.ok) {
+        // Retry on 5xx errors or 429 (rate limit)
+        if ((response.status >= 500 || response.status === 429) && attempt < retries) {
+          const delayMs = Math.min(1000 * Math.pow(2, attempt), 10000);
+          await new Promise(r => setTimeout(r, delayMs));
+          continue;
+        }
+
+        const details = await response.text().catch(() => "");
+        throw new Error(
+          `FileStation raw request failed (${response.status}). ${details || "No details"}`,
+        );
+      }
+
+      return response;
+    } catch (error) {
+      lastError = error;
+      
+      // Retry on network errors (not on abort timeout)
+      if (attempt < retries && error.name !== "AbortError") {
+        const delayMs = Math.min(1000 * Math.pow(2, attempt), 10000);
+        await new Promise(r => setTimeout(r, delayMs));
+        continue;
+      }
+
+      if (error.name === "AbortError") {
+        throw new Error(`FileStation raw request timed out after ${timeoutMs}ms`);
+      }
+      
+      throw error;
+    }
   }
 
-  return response;
+  throw lastError || new Error("FileStation raw request failed");
 }
 
 function isImageName(name) {
@@ -549,6 +591,173 @@ function parseContentDispositionFileName(value, fallbackPath) {
   return basename(fallbackPath) || "image";
 }
 
+function buildFileStationDownloadUrl({ baseUrl, sid, normalizedPath }) {
+  const params = new URLSearchParams({
+    api: "SYNO.FileStation.Download",
+    version: "2",
+    method: "download",
+    _sid: sid,
+    path: JSON.stringify([normalizedPath]),
+    mode: "open",
+  });
+
+  return `${baseUrl}/webapi/entry.cgi?${params.toString()}`;
+}
+
+function parseContentRangeTotal(contentRangeHeader) {
+  const raw = String(contentRangeHeader || "");
+  const match = raw.match(/bytes\s+\d+-\d+\/(\d+)/i);
+  if (!match?.[1]) return 0;
+  const total = Number(match[1]);
+  return Number.isFinite(total) ? total : 0;
+}
+
+async function fetchRangeChunk({
+  url,
+  start,
+  end,
+  timeoutMs = 30000,
+}) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const response = await fetch(url, {
+      method: "GET",
+      cache: "no-store",
+      redirect: "follow",
+      signal: controller.signal,
+      headers: {
+        Range: `bytes=${start}-${end}`,
+        Connection: "keep-alive",
+      },
+    });
+
+    if (!(response.status === 206 || response.status === 200)) {
+      const details = await response.text().catch(() => "");
+      throw new Error(
+        `Chunk request failed (${response.status}). ${details || "No details"}`,
+      );
+    }
+
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    return {
+      bytes,
+      status: response.status,
+      contentRange: response.headers.get("content-range"),
+      contentType: response.headers.get("content-type"),
+      contentDisposition: response.headers.get("content-disposition"),
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function downloadFileChunkedStream({
+  baseUrl,
+  sid,
+  path,
+  chunkSize = 1024 * 1024,
+  parallelChunks = 3,
+  minChunkThreshold = 20 * 1024 * 1024,
+}) {
+  const normalizedPath = normalizePath(path || "/");
+  const url = buildFileStationDownloadUrl({ baseUrl, sid, normalizedPath });
+
+  const probe = await fetchRangeChunk({
+    url,
+    start: 0,
+    end: 0,
+    timeoutMs: 10000,
+  });
+
+  const contentLength = parseContentRangeTotal(probe.contentRange);
+  const supportsRange = probe.status === 206;
+  const contentType = probe.contentType || "application/octet-stream";
+  const fileName = parseContentDispositionFileName(
+    probe.contentDisposition,
+    normalizedPath,
+  );
+
+  if (!supportsRange || contentLength <= 0 || contentLength < minChunkThreshold) {
+    return null;
+  }
+
+  const totalChunks = Math.ceil(contentLength / chunkSize);
+  const maxParallel = Math.max(1, Math.min(parallelChunks, 6));
+
+  const body = new ReadableStream({
+    start(controller) {
+      const inFlight = new Map();
+      const ready = new Map();
+      let nextToFetch = 0;
+      let nextToEnqueue = 0;
+      let closed = false;
+
+      const enqueueReady = () => {
+        while (ready.has(nextToEnqueue)) {
+          const chunk = ready.get(nextToEnqueue);
+          ready.delete(nextToEnqueue);
+          controller.enqueue(chunk);
+          nextToEnqueue += 1;
+        }
+
+        if (!closed && nextToEnqueue >= totalChunks) {
+          closed = true;
+          controller.close();
+        }
+      };
+
+      const launchMore = () => {
+        while (!closed && nextToFetch < totalChunks && inFlight.size < maxParallel) {
+          const index = nextToFetch;
+          nextToFetch += 1;
+
+          const start = index * chunkSize;
+          const end = Math.min(start + chunkSize - 1, contentLength - 1);
+
+          const task = fetchRangeChunk({ url, start, end })
+            .then(({ bytes, status }) => {
+              if (status === 200 && index === 0) {
+                // Server ignored range and returned the whole file.
+                controller.enqueue(bytes);
+                closed = true;
+                controller.close();
+                return;
+              }
+              ready.set(index, bytes);
+            })
+            .catch((error) => {
+              if (!closed) {
+                closed = true;
+                controller.error(error);
+              }
+            })
+            .finally(() => {
+              inFlight.delete(index);
+              if (closed) return;
+              enqueueReady();
+              launchMore();
+            });
+
+          inFlight.set(index, task);
+        }
+      };
+
+      launchMore();
+    },
+  });
+
+  return {
+    ok: true,
+    body,
+    contentType,
+    fileName,
+    contentLength: String(contentLength),
+    chunked: true,
+  };
+}
+
 export async function quickConnectReadFile({ baseUrl, sid, path }) {
   const result = await quickConnectReadFileStream({ baseUrl, sid, path });
 
@@ -566,8 +775,17 @@ export async function quickConnectReadFile({ baseUrl, sid, path }) {
   };
 }
 
-export async function quickConnectReadFileStream({ baseUrl, sid, path }) {
+export async function quickConnectReadFileStream({ 
+  baseUrl, 
+  sid, 
+  path,
+  useChunkedDownload = false,
+}) {
   const normalizedPath = normalizePath(path || "/");
+
+  if (useChunkedDownload) {
+    console.warn("Ignoring useChunkedDownload: passthrough streaming mode is active.");
+  }
 
   const response = await fileStationRawRequest({
     baseUrl,

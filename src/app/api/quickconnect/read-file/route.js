@@ -22,6 +22,7 @@ export async function POST(req) {
       "Content-Type": result.contentType,
       "Content-Disposition": `inline; filename="${result.fileName}"`,
       "Cache-Control": "no-store",
+      "Accept-Ranges": "bytes",
     };
 
     if (result.contentLength) {

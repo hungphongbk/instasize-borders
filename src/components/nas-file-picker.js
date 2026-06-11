@@ -481,7 +481,8 @@ export default function NasFilePicker({
     try {
       const downloadOne = async (entry) => {
         const selectedPath = entry.path;
-          const knownSize = Math.max(0, Number(entry.size || 0));
+        const knownSize = Math.max(0, Number(entry.size || 0));
+
         const response = await fetch("/api/quickconnect/read-file", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
